@@ -62,7 +62,9 @@ class Qwen3PromptProOutput(BaseInvocationOutput):
 
     enhanced_prompt: str = OutputField(description="The enhanced prompt text")
     z_image_conditioning: ZImageConditioningField = OutputField(description="Z-Image conditioning embeddings")
+    z_image_prompt: str = OutputField(description="The prompt text encoded for Z-Image conditioning")
     flux_conditioning: FluxConditioningField = OutputField(description="Flux Klein conditioning embeddings")
+    flux_prompt: str = OutputField(description="The prompt text encoded for Flux Klein conditioning")
 
 
 @invocation(
@@ -83,7 +85,12 @@ class Qwen3PromptProInvocation(BaseInvocation):
     prompt: str = InputField(default="", description="Input text prompt.", ui_component=UIComponent.Textarea)
     system_prompt: str = InputField(
         default=DEFAULT_SYSTEM_PROMPT,
-        description="System prompt that guides prompt enhancement. Customizable.",
+        description="System prompt that guides prompt enhancement (generation step).",
+        ui_component=UIComponent.Textarea,
+    )
+    conditioning_system_prompt: str = InputField(
+        default="",
+        description="System prompt prepended when encoding the enhanced prompt into conditioning. Leave empty for default behavior.",
         ui_component=UIComponent.Textarea,
     )
     qwen3_encoder: Qwen3EncoderField = InputField(
@@ -157,7 +164,7 @@ class Qwen3PromptProInvocation(BaseInvocation):
                 dtype=lora_dtype,
                 cached_weights=cached_weights,
             ):
-                z_image_embeds = self._encode_z_image(enhanced_prompt, text_encoder, tokenizer, device, context)
+                z_image_embeds, z_image_prompt = self._encode_z_image(enhanced_prompt, text_encoder, tokenizer, device, context)
 
             z_image_embeds = z_image_embeds.detach().to("cpu")
             z_conditioning_data = ConditioningFieldData(
@@ -174,7 +181,7 @@ class Qwen3PromptProInvocation(BaseInvocation):
                 dtype=lora_dtype,
                 cached_weights=cached_weights,
             ):
-                klein_embeds, klein_pooled = self._encode_flux_klein(
+                klein_embeds, klein_pooled, flux_prompt = self._encode_flux_klein(
                     enhanced_prompt, text_encoder, tokenizer, device, context
                 )
 
@@ -190,9 +197,11 @@ class Qwen3PromptProInvocation(BaseInvocation):
             z_image_conditioning=ZImageConditioningField(
                 conditioning_name=z_conditioning_name, mask=self.mask
             ),
+            z_image_prompt=z_image_prompt,
             flux_conditioning=FluxConditioningField(
                 conditioning_name=flux_conditioning_name, mask=self.mask
             ),
+            flux_prompt=flux_prompt,
         )
 
     def _generate_prompt(
@@ -248,12 +257,16 @@ class Qwen3PromptProInvocation(BaseInvocation):
         tokenizer: PreTrainedTokenizerBase,
         device: torch.device,
         context: InvocationContext,
-    ) -> torch.Tensor:
-        """Encode prompt for Z-Image. Matches ZImageTextEncoderInvocation._encode_prompt."""
+    ) -> Tuple[torch.Tensor, str]:
+        """Encode prompt for Z-Image. Returns (embeddings, decoded_prompt_text)."""
         # Apply chat template with enable_thinking=True (Z-Image default)
         try:
+            messages: list[dict[str, str]] = []
+            if self.conditioning_system_prompt:
+                messages.append({"role": "system", "content": self.conditioning_system_prompt})
+            messages.append({"role": "user", "content": prompt})
             prompt_formatted = tokenizer.apply_chat_template(
-                [{"role": "user", "content": prompt}],
+                messages,
                 tokenize=False,
                 add_generation_prompt=True,
                 enable_thinking=True,
@@ -294,7 +307,11 @@ class Qwen3PromptProInvocation(BaseInvocation):
         prompt_embeds = outputs.hidden_states[-2]
         prompt_embeds = prompt_embeds[0][prompt_mask[0]]
 
-        return prompt_embeds
+        # Decode the actual token IDs back to text (shows what the model "sees")
+        valid_ids = text_input_ids[0][attention_mask[0].bool()]
+        decoded_text = tokenizer.decode(valid_ids, skip_special_tokens=True)
+
+        return prompt_embeds, decoded_text
 
     def _encode_flux_klein(
         self,
@@ -303,11 +320,15 @@ class Qwen3PromptProInvocation(BaseInvocation):
         tokenizer: PreTrainedTokenizerBase,
         device: torch.device,
         context: InvocationContext,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Encode prompt for Flux Klein. Matches Flux2KleinTextEncoderInvocation._encode_prompt."""
+    ) -> Tuple[torch.Tensor, torch.Tensor, str]:
+        """Encode prompt for Flux Klein. Returns (embeddings, pooled, decoded_prompt_text)."""
         # Apply chat template with enable_thinking=False (Klein default)
+        messages: list[dict[str, str]] = []
+        if self.conditioning_system_prompt:
+            messages.append({"role": "system", "content": self.conditioning_system_prompt})
+        messages.append({"role": "user", "content": prompt})
         text: str = tokenizer.apply_chat_template(  # type: ignore[assignment]
-            [{"role": "user", "content": prompt}],
+            messages,
             tokenize=False,
             add_generation_prompt=True,
             enable_thinking=False,
@@ -356,7 +377,11 @@ class Qwen3PromptProInvocation(BaseInvocation):
         num_tokens = expanded_mask.sum(dim=1).clamp(min=1)
         pooled_embeds = sum_embeds / num_tokens
 
-        return prompt_embeds, pooled_embeds
+        # Decode the actual token IDs back to text (shows what the model "sees")
+        valid_ids = input_ids[0][attention_mask[0].bool()]
+        decoded_text = tokenizer.decode(valid_ids, skip_special_tokens=True)
+
+        return prompt_embeds, pooled_embeds, decoded_text
 
     def _lora_iterator(self, context: InvocationContext) -> Iterator[Tuple[ModelPatchRaw, float]]:
         """Iterate over LoRA models to apply to the Qwen3 text encoder."""
