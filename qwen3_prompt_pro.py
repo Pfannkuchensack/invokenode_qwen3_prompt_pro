@@ -150,9 +150,17 @@ class Qwen3PromptProInvocation(BaseInvocation):
             text_encoder.to(device)
 
             # --- Step 1: Generate enhanced prompt (no LoRAs) ---
-            context.util.signal_progress("Generating enhanced prompt with Qwen3")
-            enhanced_prompt = self._generate_prompt(text_encoder, tokenizer, device)
-            context.logger.info(f"Qwen3 Prompt Pro enhanced: {enhanced_prompt[:200]}...")
+            if hasattr(text_encoder, "generate"):
+                context.util.signal_progress("Generating enhanced prompt with Qwen3")
+                enhanced_prompt = self._generate_prompt(text_encoder, tokenizer, device)
+                context.logger.info(f"Qwen3 Prompt Pro enhanced: {enhanced_prompt[:200]}...")
+            else:
+                context.logger.warning(
+                    "Qwen3 model has no LM head (diffusers format Qwen3Model). "
+                    "Text generation is not available — using original prompt. "
+                    "Use a checkpoint or GGUF model for prompt enhancement."
+                )
+                enhanced_prompt = self.prompt
 
             # --- Step 2: Encode for Z-Image (with LoRAs) ---
             context.util.signal_progress("Encoding enhanced prompt for Z-Image")
