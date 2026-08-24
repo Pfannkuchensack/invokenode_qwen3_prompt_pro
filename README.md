@@ -23,6 +23,12 @@ The node will be automatically discovered on the next InvokeAI startup.
 
 ## Usage
 
+![The Qwen3 Prompt Pro node](docs/node.png)
+
+One encoder in, five things out: the enhanced prompt as text, plus conditioning **and** the prompt
+string for each of the two pipelines — so you can feed a pipeline directly or inspect what the LLM
+actually wrote.
+
 1. Load a Qwen3 encoder model (the same one used by Z-Image or Flux2 Klein text encoder nodes)
 2. Connect it to the **Qwen3 Prompt Pro** node
 3. Enter a brief prompt
